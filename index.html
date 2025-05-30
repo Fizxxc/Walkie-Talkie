@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Walkie Talkie Room</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-purple-100 flex items-center justify-center min-h-screen">
+
+  <div class="text-center p-6 rounded-2xl bg-white shadow-lg max-w-sm w-full space-y-4">
+    <h1 class="text-3xl font-bold text-purple-700">Walkie Talkie</h1>
+
+    <input id="roomInput" type="text" placeholder="Masukkan Room ID"
+      class="border border-purple-300 rounded-xl px-4 py-2 w-full focus:outline-none text-center" />
+    <button id="joinBtn" class="bg-purple-600 text-white px-4 py-2 rounded-xl w-full hover:bg-purple-700">
+      Bergabung
+    </button>
+
+    <div id="roomList" class="space-y-1 text-left text-sm text-gray-600 hidden">
+      <p class="font-semibold mt-4">Room Aktif:</p>
+      <div id="roomItems" class="space-y-1"></div>
+    </div>
+
+    <div id="talkUI" class="hidden flex flex-col items-center space-y-4">
+      <p class="text-gray-600">Tekan & tahan untuk bicara</p>
+      <button id="talkButton" class="bg-purple-600 text-white text-xl px-6 py-4 rounded-full active:bg-purple-800">
+        🎤 Talk
+      </button>
+      <p id="status" class="text-sm text-gray-500">Terhubung...</p>
+    </div>
+  </div>
+
+  <script>
+    const joinBtn = document.getElementById("joinBtn");
+    const talkUI = document.getElementById("talkUI");
+    const roomInput = document.getElementById("roomInput");
+    const talkButton = document.getElementById("talkButton");
+    const statusText = document.getElementById("status");
+    const roomList = document.getElementById("roomList");
+    const roomItems = document.getElementById("roomItems");
+
+    let socket, peerConnection, localStream;
+    const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+    async function getRooms() {
+      try {
+        const res = await fetch("/api/signal");
+        const data = await res.json();
+        roomItems.innerHTML = '';
+        if (data.rooms.length) {
+          roomList.classList.remove('hidden');
+          data.rooms.forEach(room => {
+            const btn = document.createElement("button");
+            btn.innerText = `🔊 ${room}`;
+            btn.className = "hover:underline text-purple-600";
+            btn.onclick = () => {
+              roomInput.value = room;
+              joinBtn.click();
+            };
+            roomItems.appendChild(btn);
+          });
+        }
+      } catch (e) {}
+    }
+
+    getRooms();
+    setInterval(getRooms, 5000);
+
+    joinBtn.addEventListener("click", async () => {
+      const room = roomInput.value.trim();
+      if (!room) return alert("Masukkan Room ID terlebih dahulu.");
+
+      socket = new WebSocket(`wss://${location.host}/api/signal?room=${encodeURIComponent(room)}`);
+
+      socket.onmessage = async ({ data }) => {
+        const msg = JSON.parse(data);
+        if (msg.offer) {
+          peerConnection = createPeer();
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.offer));
+          const answer = await peerConnection.createAnswer();
+          await peerConnection.setLocalDescription(answer);
+          socket.send(JSON.stringify({ answer }));
+        } else if (msg.answer) {
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.answer));
+        } else if (msg.candidate && peerConnection) {
+          try {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(msg.candidate));
+          } catch (e) {}
+        }
+      };
+
+      peerConnection = createPeer();
+      localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+      talkUI.classList.remove("hidden");
+      joinBtn.disabled = true;
+      roomInput.disabled = true;
+    });
+
+    function createPeer() {
+      const pc = new RTCPeerConnection(config);
+      pc.ontrack = e => {
+        const audio = new Audio();
+        audio.srcObject = e.streams[0];
+        audio.play();
+      };
+      pc.onicecandidate = e => {
+        if (e.candidate) socket.send(JSON.stringify({ candidate: e.candidate }));
+      };
+      return pc;
+    }
+
+    talkButton.addEventListener("mousedown", async () => {
+      if (!localStream) return;
+      localStream.getTracks().forEach(t => peerConnection.addTrack(t, localStream));
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+      socket.send(JSON.stringify({ offer }));
+      statusText.innerText = "Mengirim audio...";
+    });
+
+    talkButton.addEventListener("mouseup", () => {
+      if (peerConnection) {
+        peerConnection.getSenders().forEach(sender => {
+          peerConnection.removeTrack(sender);
+        });
+      }
+      statusText.innerText = "Terhubung...";
+    });
+  </script>
+</body>
+</html>
